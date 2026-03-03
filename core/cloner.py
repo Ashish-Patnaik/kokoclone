@@ -9,7 +9,7 @@ from misaki import espeak
 from misaki.espeak import EspeakG2P
 
 class KokoClone:
-    def __init__(self, kanade_model="frothywater/kanade-25hz-clean", hf_repo="PatnaikAshish/kokoclone"):
+    def __init__(self, kanade_model="frothywater/kanade-12.5hz", hf_repo="PatnaikAshish/kokoclone"):
         # Auto-detect GPU (CUDA) or fallback to CPU
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Initializing KokoClone on: {self.device.type.upper()}")
@@ -24,9 +24,6 @@ class KokoClone:
         
         # Cache for Kokoro
         self.kokoro_cache = {}
-        
-        # Initialize fallback (Misaki handles this globally in the background)
-        self.fallback = espeak.EspeakFallback(british=False)
 
     def _ensure_file(self, folder, filename):
         """Auto-downloads missing models from your Hugging Face repo."""
@@ -49,21 +46,34 @@ class KokoClone:
         vocab = None
         g2p = None
 
-        # REMOVED the 'fallback=' kwargs here
-        routes = {
-            "en": {"voice": "af_bella"},
-            "hi": {"g2p": EspeakG2P(language="hi"), "voice": "hf_alpha"},
-            "fr": {"g2p": EspeakG2P(language="fr-fr"), "voice": "ff_siwis"},
-            "it": {"g2p": EspeakG2P(language="it"), "voice": "im_nicola"},
-            "es": {"g2p": EspeakG2P(language="es"), "voice": "im_nicola"},
-            "pt": {"g2p": EspeakG2P(language="pt-br"), "voice": "pf_dora"},
-        }
-
-        if lang in routes:
-            g2p = routes[lang].get("g2p")
-            voice = routes[lang]["voice"]
+        # Optimized routing: Only load the specific G2P engine requested
+        if lang == "en":
+            voice = "af_bella"
+        elif lang == "hi":
+            g2p = EspeakG2P(language="hi")
+            voice = "hf_alpha"
+        elif lang == "fr":
+            g2p = EspeakG2P(language="fr-fr")
+            voice = "ff_siwis"
+        elif lang == "it":
+            g2p = EspeakG2P(language="it")
+            voice = "im_nicola"
+        elif lang == "es":
+            g2p = EspeakG2P(language="es")
+            voice = "im_nicola"
+        elif lang == "pt":
+            g2p = EspeakG2P(language="pt-br")
+            voice = "pf_dora"
         elif lang == "ja":
             from misaki import ja
+            import unidic
+            import subprocess
+            
+            # FIX: Auto-download the Japanese dictionary if it's missing!
+            if not os.path.exists(unidic.DICDIR):
+                print("Downloading missing Japanese dictionary (this takes a minute but only happens once)...")
+                subprocess.run(["python", "-m", "unidic", "download"], check=True)
+                
             g2p = ja.JAG2P()
             voice = "jf_alpha"
             vocab = self._ensure_file("model", "config.json")
@@ -116,4 +126,5 @@ class KokoClone:
             print(f"Success! Saved: {output_path}")
 
         finally:
-            os.remove(temp_path) # Clean up temp file silently
+            if os.path.exists(temp_path):
+                os.remove(temp_path) # Clean up temp file silently
