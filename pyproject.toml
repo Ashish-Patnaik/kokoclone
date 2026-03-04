@@ -1,0 +1,23 @@
+[project]
+name = "kokoclone"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "gradio>=6.8.0",
+    "huggingface-hub>=1.5.0",
+    "kanade-tokenizer",
+    "kokoro-onnx[gpu]>=0.5.0",
+    "misaki[en,ja,zh]>=0.9.4",
+    "ninja>=1.13.0",
+    "soundfile>=0.13.1",
+    "torch>=2.10.0",
+    "torchaudio>=2.10.0",
+]
+
+[tool.uv.sources]
+kanade-tokenizer = { git = "https://github.com/frothywater/kanade-tokenizer" }
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]
