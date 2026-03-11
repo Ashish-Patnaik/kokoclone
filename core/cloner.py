@@ -1,10 +1,18 @@
+import importlib.resources
+import json
 import os
+import sys
 import tempfile
+import time
+import types
+
+import numpy as np
 import torch
 import soundfile as sf
 from huggingface_hub import hf_hub_download
 from kanade_tokenizer import KanadeModel, load_audio, load_vocoder, vocode
 from kokoro_onnx import Kokoro
+from kokoro_onnx.config import MAX_PHONEME_LENGTH, SAMPLE_RATE
 from misaki import espeak
 from misaki.espeak import EspeakG2P
 
@@ -25,6 +33,71 @@ class KokoClone:
         # Cache for Kokoro
         self.kokoro_cache = {}
 
+    def _get_vocab_config(self, lang):
+        """Return a vocab config path compatible with the selected language/model."""
+        # zh/ja model exports use the v1.1-zh vocabulary from hexgrad.
+        if lang in {"zh", "ja"}:
+            zh_vocab = os.path.join("model", "config-v1.1-zh.json")
+            if not os.path.exists(zh_vocab):
+                print("Downloading missing file 'config-v1.1-zh.json' from hexgrad/Kokoro-82M-v1.1-zh...")
+                hf_hub_download(
+                    repo_id="hexgrad/Kokoro-82M-v1.1-zh",
+                    filename="config.json",
+                    local_dir=".",
+                )
+                downloaded = os.path.join("config.json")
+                if os.path.exists(downloaded):
+                    os.replace(downloaded, zh_vocab)
+
+            if os.path.exists(zh_vocab):
+                return zh_vocab
+
+        local_config = os.path.join("model", "config.json")
+        if os.path.exists(local_config):
+            try:
+                with open(local_config, encoding="utf-8") as fp:
+                    config = json.load(fp)
+                if isinstance(config, dict) and "vocab" in config:
+                    return local_config
+                print("Warning: model/config.json is missing 'vocab'; using packaged kokoro_onnx config instead")
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"Warning: could not read model/config.json ({exc}); using packaged kokoro_onnx config instead")
+
+        return str(importlib.resources.files("kokoro_onnx").joinpath("config.json"))
+
+    def _patch_kokoro_compat(self, kokoro):
+        """Patch kokoro_onnx instances for model exports with mixed input conventions."""
+        input_types = {input_meta.name: input_meta.type for input_meta in kokoro.sess.get_inputs()}
+        if input_types.get("speed") != "tensor(float)" or "input_ids" not in input_types:
+            return kokoro
+
+        def _create_audio_compat(instance, phonemes, voice, speed):
+            if len(phonemes) > MAX_PHONEME_LENGTH:
+                phonemes = phonemes[:MAX_PHONEME_LENGTH]
+
+            start_t = time.time()
+            tokens = np.array(instance.tokenizer.tokenize(phonemes), dtype=np.int64)
+            assert len(tokens) <= MAX_PHONEME_LENGTH, (
+                f"Context length is {MAX_PHONEME_LENGTH}, but leave room for the pad token 0 at the start & end"
+            )
+
+            voice_style = voice[len(tokens)]
+            inputs = {
+                "input_ids": [[0, *tokens, 0]],
+                "style": np.array(voice_style, dtype=np.float32),
+                "speed": np.array([speed], dtype=np.float32),
+            }
+
+            audio = instance.sess.run(None, inputs)[0]
+            audio_duration = len(audio) / SAMPLE_RATE
+            create_duration = time.time() - start_t
+            if audio_duration > 0:
+                _ = create_duration / audio_duration
+            return audio, SAMPLE_RATE
+
+        kokoro._create_audio = types.MethodType(_create_audio_compat, kokoro)
+        return kokoro
+
     def _ensure_file(self, folder, filename):
         """Auto-downloads missing models from your Hugging Face repo."""
         filepath = os.path.join(folder, filename)
@@ -39,12 +112,24 @@ class KokoClone:
             )
         return filepath
 
+    def _create_en_callable(self):
+        """Create an English G2P callable for handling English tokens in non-English text."""
+        en_g2p = EspeakG2P(language="en-us")
+        def en_callable(text):
+            try:
+                phonemes, _ = en_g2p(text)
+                return phonemes
+            except Exception:
+                return text
+        return en_callable
+
     def _get_config(self, lang):
         """Routes the correct model, voice, and G2P based on language."""
         model_file = self._ensure_file("model", "kokoro.onnx")
         voices_file = self._ensure_file("voice", "voices-v1.0.bin")
         vocab = None
         g2p = None
+        en_callable = None
 
         # Optimized routing: Only load the specific G2P engine requested
         if lang == "en":
@@ -72,30 +157,55 @@ class KokoClone:
             # FIX: Auto-download the Japanese dictionary if it's missing!
             if not os.path.exists(unidic.DICDIR):
                 print("Downloading missing Japanese dictionary (this takes a minute but only happens once)...")
-                subprocess.run(["python", "-m", "unidic", "download"], check=True)
+                subprocess.run([sys.executable, "-m", "unidic", "download"], check=True)
                 
             g2p = ja.JAG2P()
             voice = "jf_alpha"
-            vocab = self._ensure_file("model", "config.json")
+            vocab = self._get_vocab_config(lang)
+            # Provide English fallback for mixed Japanese-English text
+            en_callable = self._create_en_callable()
         elif lang == "zh":
             from misaki import zh
-            g2p = zh.ZHG2P(version="1.1")
+            import re
+            
+            base_g2p = zh.ZHG2P(version="1.1")
+            en_callable = self._create_en_callable()
+            
+            # Wrap ZHG2P to handle English tokens in mixed Chinese-English text.
+            def mixed_g2p(text):
+                # Split on English words/names and process them separately
+                parts = re.split(r'([a-zA-Z]+)', text)
+                phonemes_list = []
+                for part in parts:
+                    if part and part[0].isalpha() and part[0].isascii():
+                        # English token: use English G2P
+                        phonemes_list.append(en_callable(part))
+                    else:
+                        # Chinese token: use Chinese G2P
+                        if part:
+                            ph, _ = base_g2p(part)
+                            phonemes_list.append(ph)
+                result = "".join(phonemes_list)
+                return result, text
+            
+            g2p = mixed_g2p
             voice = "zf_001"
             model_file = self._ensure_file("model", "kokoro-v1.1-zh.onnx")
             voices_file = self._ensure_file("voice", "voices-v1.1-zh.bin")
-            vocab = self._ensure_file("model", "config.json")
+            vocab = self._get_vocab_config(lang)
         else:
             raise ValueError(f"Language '{lang}' not supported.")
 
-        return model_file, voices_file, vocab, g2p, voice
+        return model_file, voices_file, vocab, g2p, voice, en_callable
 
     def generate(self, text, lang, reference_audio, output_path="output.wav"):
         """Generates the speech and applies the target voice."""
-        model_file, voices_file, vocab, g2p, voice = self._get_config(lang)
+        model_file, voices_file, vocab, g2p, voice, en_callable = self._get_config(lang)
         
         # 1. Kokoro TTS Phase
         if model_file not in self.kokoro_cache:
-            self.kokoro_cache[model_file] = Kokoro(model_file, voices_file, vocab_config=vocab) if vocab else Kokoro(model_file, voices_file)
+            kokoro = Kokoro(model_file, voices_file, vocab_config=vocab) if vocab else Kokoro(model_file, voices_file)
+            self.kokoro_cache[model_file] = self._patch_kokoro_compat(kokoro)
         
         kokoro = self.kokoro_cache[model_file]
         
