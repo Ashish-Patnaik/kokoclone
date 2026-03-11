@@ -1,7 +1,8 @@
-<img width="1050" height="450" alt="image" src="https://github.com/user-attachments/assets/26fbb00c-220e-435a-8f54-431781449c76" />
+<p align="center">
+  <img width="1050" height="450" alt="KokoClone Banner" src="https://github.com/user-attachments/assets/26fbb00c-220e-435a-8f54-431781449c76" />
+</p>
 
-
-<h1 align="center">KokoClone</h1>
+<h1 align="center">🎙️ KokoClone</h1>
 
 <p align="center">
   <a href="https://huggingface.co/spaces/PatnaikAshish/kokoclone">
@@ -10,215 +11,134 @@
   <a href="https://huggingface.co/PatnaikAshish/kokoclone">
     <img src="https://img.shields.io/badge/🤗%20Models-Repository-orange" alt="Hugging Face Models" />
   </a>
-  <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/Python-3.10%20to%203.12-3776AB.svg?logo=python&logoColor=white" alt="Python" />
   <a href="https://opensource.org/licenses/Apache-2.0">
     <img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License" />
   </a>
 </p>
 
-
-
-##  What is KokoClone?
-
 **KokoClone** is a fast, real-time compatible multilingual voice cloning system built on top of **Kokoro-ONNX**, one of the fastest open-source neural TTS engines available today.
 
 It allows you to:
-
-* Type text in multiple languages, provide a short reference audio clip, and instantly generate speech in that same voice
-* Re-voice an existing audio recording to sound like any reference speaker — no transcription needed
-
-Just text → voice → cloned output. 
-
-Existing audio → reference voice → re-voiced output.
-
-
-
-## Why Kokoro?
-
-KokoClone is powered by **Kokoro-ONNX**, a highly optimized neural TTS engine designed for:
-
-* Extremely fast inference
-* Natural prosody and expressive speech
-* Lightweight ONNX runtime compatibility
-* Real-time deployment on CPU
-* Even faster performance with GPU
-
-Unlike many heavy TTS systems, Kokoro is lightweight and responsive — making KokoClone suitable for real-time applications, voice assistants, demos, and interactive tools.
+* **Text → Clone:** Type text in multiple languages, provide a short reference audio clip, and instantly generate speech in that same voice.
+* **Audio → Clone:** Re-voice an existing audio recording to sound like any reference speaker — *no transcription needed*.
 
 
 ## Features
 
 ### Multilingual Speech Generation
+Generate native speech in English (`en`), Hindi (`hi`), French (`fr`), Japanese (`ja`), Chinese (`zh`), Italian (`it`), Portuguese (`pt`), and Spanish (`es`).
 
-Generate native speech in:
+### Zero-Shot Voice Cloning
+Upload a 3–10 second voice sample and KokoClone instantly transfers its vocal characteristics to the generated speech.
 
-* English (`en`)
-* Hindi (`hi`)
-* French (`fr`)
-* Japanese (`ja`)
-* Chinese (`zh`)
-* Italian (`it`)
-* Portuguese (`pt`)
-* Spanish (`es`)
-
-
-###  Zero-Shot Voice Cloning
-
-Upload a short voice sample and KokoClone transfers its vocal characteristics to the generated speech.
-
-
-### Audio-to-Audio Voice Conversion (Audio → Clone)
-
-Upload any existing speech recording and re-voice it to sound like a reference speaker — **no transcription needed**. The pipeline skips TTS entirely and runs purely through the Kanade voice-conversion model.
-
-Works on recordings of any length: audio is automatically split into VRAM-aware chunks, processed sequentially, and seamlessly reassembled.
-
-
-### Real-Time Friendly
-
-Built on Kokoro's efficient ONNX runtime pipeline, KokoClone runs smoothly on:
-
-* Standard laptops (CPU)
-* Workstations (GPU)
-
+### Audio-to-Audio Voice Conversion
+Upload any existing speech recording and re-voice it to sound like a reference speaker. The pipeline skips TTS entirely and runs purely through the Kanade voice-conversion model. Works on recordings of any length thanks to automatic VRAM-aware chunking!
 
 ### Automatic Model Handling
+On the first run, the required model weights (`.onnx` and `.bin` files) are automatically downloaded from Hugging Face and placed in the correct directories.
 
-On first run, required model files are downloaded automatically and placed in the correct directories.
-
-
-### Built-in Web Interface
-
-Includes a clean and responsive Gradio UI for quick testing and demos.
-
-* **🎤 Text → Clone** — enter text, pick a language, upload a reference voice
-* **🔁 Audio → Clone** — upload source audio and a reference voice, get back re-voiced audio
-* **🎤 Text → Clone** — enter text, pick a language, upload a reference voice
-* **🔁 Audio → Clone** — upload source audio and a reference voice, get back re-voiced audio
+### Real-Time Friendly
+Built on Kokoro's efficient ONNX runtime pipeline, KokoClone detects your hardware and runs smoothly on both standard laptops (CPU) and workstations (GPU).
 
 
-##  Live Demo
-
-Try it instantly without installing anything:
-
+## Live Demo
+Try it instantly without installing anything:  
 👉 **[KokoClone on Hugging Face Spaces](https://huggingface.co/spaces/PatnaikAshish/kokoclone)**
-
 
 
 ## Installation
 
-Recommended: Use `conda` for a clean environment.
+You can set up KokoClone using either **Conda** (Recommended) or **uv**.
 
-or
-
-with **[uv](https://docs.astral.sh/uv/)**, a fast Python package and project manager.
-
-```bash
-# macOS / Linux <- preferred method
-
-### Prerequisites
-
-With uv
-
-* [uv](https://docs.astral.sh/uv/) — install with:
-
-```bash
-# macOS / Linux <- preferred method
-
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-```
-
-### Clone the Repository
-
+### 1. Clone the Repository
 ```bash
 git clone https://github.com/Ashish-Patnaik/kokoclone.git
 cd kokoclone
+
 ```
 
-###  Create Environment
-With conda
+### 2. Set Up the Environment & Install Dependencies
+
+#### Option A: Using Conda (Recommended)
+
 ```bash
 conda create -n kokoclone python=3.12.12 -y
 conda activate kokoclone
+
 ```
 
-With uv
-```bash
-# Create a virtual environment and install all dependencies from pyproject.toml
-uv sync
-
-# Activate the environment (optional — uv run handles activation automatically)
-source .venv/bin/activate # Linux / macOS
-.venv\Scripts\activate # Windows
-```
-
-
-
-##  Install Dependencies
-
-###  CPU Installation (Recommended for most users)
+**For CPU Users (Mac / Standard Laptops):**
 
 ```bash
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install torch torchaudio --index-url [https://download.pytorch.org/whl/cpu](https://download.pytorch.org/whl/cpu)
 pip install -r requirements.txt
+
 ```
 
-###  GPU Installation (NVIDIA users)
+**For GPU Users (Nvidia GPUs):**
 
 ```bash
 pip install -r requirements.txt
 pip install kokoro-onnx[gpu]
-```
-### GPU Support (NVIDIA)
 
-The default install uses the CPU build of PyTorch. For GPU:
+```
+
+#### Option B: Using `uv`
+
+If you prefer [uv](https://docs.astral.sh/uv/) for fast package management:
 
 ```bash
+# For CPU Users
+uv sync
+
+# For GPU Users (Nvidia)
 uv sync --extra gpu
+
+# Activate the environment
+source .venv/bin/activate  # Linux/macOS
+.venv\Scripts\activate     # Windows
+
 ```
 
 
-## Usage
 
-KokoClone can be used in three ways:
+##  Usage
 
+KokoClone is highly flexible and can be used via Web UI, CLI, or Python API.
 
+### 1. Web Interface (Gradio)
 
-###  Web Interface
-
-Launch the Gradio app:
+Launch the interactive web app:
 
 ```bash
 python app.py
+
 ```
 
-Then open the browser interface to:
+* **Tab 1 (Text → Clone):** Enter text, pick a language, upload a reference voice, and generate.
+* **Tab 2 (Audio → Clone):** Upload source audio and a reference voice, and get back re-voiced audio.
 
-**Tab 1 — 🎤 Text → Clone**
-1. Enter the text to synthesize
-2. Select a language
-3. Upload or record a 3–10 second reference voice clip
-4. Click **Generate Clone**
+### 2. Command Line Interface (CLI)
 
-**Tab 2 — 🔁 Audio → Clone**
-1. Upload or record the source audio you want to re-voice
-2. Upload or record a 3–10 second reference voice clip (target speaker)
-3. Click **Convert Voice**
-
-
-### Command Line
+Generate speech directly from your terminal.
 
 **Text to cloned speech (default mode):**
 
 ```bash
 python cli.py --text "Hello from KokoClone" --lang en --ref reference.wav --out output.wav
+
 ```
 
+**Audio to re-voiced speech:**
 
+```bash
+python cli.py --mode convert --source original_speech.wav --ref target_voice.wav --out revoiced.wav
+
+```
 
 | Argument | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--mode` | `tts` | `tts` (text → speech) or `convert` (audio → re-voiced audio) |
 | `--text` | — | Text to synthesize *(required for `tts` mode)* |
 | `--lang` | `en` | Language code: `en hi fr ja zh it es pt` |
@@ -226,25 +146,26 @@ python cli.py --text "Hello from KokoClone" --lang en --ref reference.wav --out 
 | `--ref` | — | Path to reference voice audio *(always required)* |
 | `--out` | `output.wav` | Output file path |
 
+### 3. Python API
 
-### Python API
+Integrate KokoClone into your own Python applications.
 
-**Text to cloned speech:**
+**Text to Cloned Speech:**
 
 ```python
 from core.cloner import KokoClone
 
 cloner = KokoClone()
-
 cloner.generate(
- text=\"This voice is cloned using KokoClone.\",
- lang=\"en\",
- reference_audio=\"reference.wav\",
- output_path=\"output.wav\"
+    text="This voice is cloned using KokoClone.",
+    lang="en",
+    reference_audio="reference.wav",
+    output_path="output.wav"
 )
+
 ```
 
-**Audio-to-audio voice conversion:**
+**Audio-to-Audio Voice Conversion:**
 
 ```python
 import soundfile as sf
@@ -252,62 +173,60 @@ from kanade_tokenizer import load_audio
 from core.cloner import KokoClone
 from core.chunked_convert import chunked_voice_conversion
 
-##  Project Structure
+cloner = KokoClone()
+
+# Load audio tensors
+source_wav = load_audio("source_speech.wav", sample_rate=cloner.sample_rate).to(cloner.device)
+ref_wav = load_audio("target_voice.wav", sample_rate=cloner.sample_rate).to(cloner.device)
+
+# Convert using VRAM-aware chunking
+converted = chunked_voice_conversion(
+    kanade=cloner.kanade,
+    vocoder_model=cloner.vocoder,
+    source_wav=source_wav,
+    ref_wav=ref_wav,
+    sample_rate=cloner.sample_rate,
+)
+
+sf.write("revoiced_output.wav", converted.numpy(), cloner.sample_rate)
 
 ```
-## Project Structure
 
-```
-app.py → Gradio Web Interface (two-tab UI)
-cli.py → Command-line tool (tts and convert modes)
-core/
- cloner.py → Core TTS + voice cloning engine
- chunked_convert.py → VRAM-aware chunked audio-to-audio conversion
-inference.py → Example usage script
-model/ → Downloaded TTS model weights
-voice/ → Voice embeddings
-docs/
- plans/ → Design documents
-```
 
 ## Memory Management for Long Audio
 
-The `chunked_voice_conversion` function in `core/chunked_convert.py` handles memory automatically when converting long recordings:
+The `chunked_voice_conversion` function in `core/chunked_convert.py` handles memory automatically when converting long audio recordings:
 
-* **VRAM budget**: on CUDA, chunks are sized so each forward pass uses at most 50 % of total GPU memory (configurable via the `vram_fraction` parameter).
-* **RoPE ceiling**: the Kanade `mel_decoder` Transformer has positional embeddings precomputed for 1,024 mel frames (`hop_length = 256` at 24 kHz ≈ 10.9 s of audio per window). Chunk windows are hard-capped below this limit (≈ 8.9 s of source audio per chunk) with a 10 % safety margin to prevent recomputation and quality degradation.
-* **Overlap smoothing**: each chunk includes a 0.5 s overlap on both sides to suppress boundary artefacts. Overlap mel frames (`overlap_samples // hop_length = 46 frames`) are trimmed before concatenation.
-* **Single-pass vocoding**: the full reassembled mel spectrogram is passed to the vocoder in one shot for clean waveform reconstruction.
+* **VRAM Budget:** On CUDA, chunks are sized so each forward pass uses at most 50% of total GPU memory (configurable via the `vram_fraction` parameter).
+* **RoPE Ceiling:** The Kanade `mel_decoder` Transformer has positional embeddings precomputed for 1,024 mel frames. Chunk windows are hard-capped below this limit (≈ 8.9s of source audio per chunk) with a 10% safety margin to prevent recomputation and quality degradation.
+* **Overlap Smoothing:** Each chunk includes a 0.5s overlap on both sides to suppress boundary artifacts.
+* **Single-Pass Vocoding:** The full reassembled mel spectrogram is passed to the vocoder in one shot for clean waveform reconstruction.
 
-Progress and timing are logged to stdout:
+
+## Project Structure
+
+```text
+app.py                → Gradio Web Interface (two-tab UI)
+cli.py                → Command-line tool (tts and convert modes)
+inference.py          → Example API usage script
+core/
+ ├── cloner.py        → Core TTS + voice cloning engine
+ └── chunked_convert.py → VRAM-aware chunked audio conversion
+model/                → Downloaded Kokoro model weights (Auto-populates)
+voice/                → Downloaded Kokoro voice bins (Auto-populates)
 
 ```
-[chunked_convert] VRAM budget: 11.76 GB (75% of 23.53 GB) → chunk size: 8.9s / 214,099 samples (RoPE ceiling: 8.9s)
-[chunked_convert] Completed in 38.2s
-```
-
-
-
-## Use Cases
-
-* Voice assistant prototypes
-* Real-time TTS demos
-* Multilingual narration tools
-* Content creation and dubbing
-* Re-voicing long recordings or podcasts
-* Research experiments
-* Interactive AI applications
-
 
 
 ## Acknowledgments
 
-This project builds upon:
+This project builds upon the incredible open-source work of:
 
-* **Kokoro-ONNX** — for fast and efficient neural speech synthesis
-* **Kanade Tokenizer** — for voice conversion architecture
-
+* **[Kokoro-ONNX](https://github.com/thewh1teagle/kokoro-onnx)** — for fast and efficient neural speech synthesis.
+* **[Kanade Tokenizer](https://github.com/frothywater/kanade-tokenizer)** — for the brilliant zero-shot voice conversion architecture.
 
 ## License
 
-Licensed under the Apache 2.0 License.
+Licensed under the [Apache 2.0 License](https://www.google.com/search?q=LICENSE).
+
+```
