@@ -1,9 +1,6 @@
 import argparse
 import sys
-import soundfile as sf
-from kanade_tokenizer import load_audio
 from core.cloner import KokoClone
-from core.chunked_convert import chunked_voice_conversion
 
 
 def main() -> None:
@@ -49,19 +46,11 @@ def main() -> None:
             parser.error("--source is required when --mode is 'convert'")
 
         try:
-            source_wav = load_audio(args.source, sample_rate=cloner.sample_rate).to(cloner.device)
-            ref_wav = load_audio(args.ref, sample_rate=cloner.sample_rate).to(cloner.device)
-
-            converted = chunked_voice_conversion(
-                kanade=cloner.kanade,
-                vocoder_model=cloner.vocoder,
-                source_wav=source_wav,
-                ref_wav=ref_wav,
-                sample_rate=cloner.sample_rate,
+            cloner.convert(
+                source_audio=args.source,
+                reference_audio=args.ref,
+                output_path=args.out,
             )
-
-            sf.write(args.out, converted.numpy(), cloner.sample_rate)
-            print(f"Success! Saved: {args.out}")
         except Exception as exc:
             print(f"Error during voice conversion: {exc}", file=sys.stderr)
             sys.exit(1)

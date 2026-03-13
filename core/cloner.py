@@ -7,6 +7,7 @@ from kanade_tokenizer import KanadeModel, load_audio, load_vocoder, vocode
 from kokoro_onnx import Kokoro
 from misaki import espeak
 from misaki.espeak import EspeakG2P
+from core.chunked_convert import chunked_voice_conversion
 
 class KokoClone:
     def __init__(self, kanade_model="frothywater/kanade-12.5hz", hf_repo="PatnaikAshish/kokoclone"):
@@ -119,12 +120,36 @@ class KokoClone:
             ref_wav = load_audio(reference_audio, sample_rate=self.sample_rate).to(self.device)
 
             with torch.inference_mode():
-                converted_mel = self.kanade.voice_conversion(source_waveform=source_wav, reference_waveform=ref_wav)
-                converted_wav = vocode(self.vocoder, converted_mel.unsqueeze(0))
+                converted_wav = chunked_voice_conversion(
+                    kanade=self.kanade,
+                    vocoder_model=self.vocoder,
+                    source_wav=source_wav,
+                    ref_wav=ref_wav,
+                    sample_rate=self.sample_rate
+                )
 
-            sf.write(output_path, converted_wav.squeeze().cpu().numpy(), self.sample_rate)
+            sf.write(output_path, converted_wav.numpy(), self.sample_rate)
             print(f"Success! Saved: {output_path}")
 
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path) # Clean up temp file silently
+
+    def convert(self, source_audio, reference_audio, output_path="output.wav"):
+        """Re-voices source_audio to sound like reference_audio using chunking."""
+        print("Applying Voice Conversion...")
+        # Load and push to device
+        source_wav = load_audio(source_audio, sample_rate=self.sample_rate).to(self.device)
+        ref_wav = load_audio(reference_audio, sample_rate=self.sample_rate).to(self.device)
+
+        with torch.inference_mode():
+            converted_wav = chunked_voice_conversion(
+                kanade=self.kanade,
+                vocoder_model=self.vocoder,
+                source_wav=source_wav,
+                ref_wav=ref_wav,
+                sample_rate=self.sample_rate
+            )
+
+        sf.write(output_path, converted_wav.numpy(), self.sample_rate)
+        print(f"Success! Saved: {output_path}")
