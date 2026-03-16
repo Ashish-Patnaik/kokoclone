@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import torch
 import soundfile as sf
@@ -95,7 +96,13 @@ class KokoClone:
         
         # 1. Kokoro TTS Phase
         if model_file not in self.kokoro_cache:
-            self.kokoro_cache[model_file] = Kokoro(model_file, voices_file, vocab_config=vocab) if vocab else Kokoro(model_file, voices_file)
+            if vocab:
+                # Load vocab config from JSON file
+                with open(vocab, 'r') as f:
+                    vocab_config = json.load(f)
+                self.kokoro_cache[model_file] = Kokoro(model_file, voices_file, vocab_config=vocab_config)
+            else:
+                self.kokoro_cache[model_file] = Kokoro(model_file, voices_file)
         
         kokoro = self.kokoro_cache[model_file]
         
