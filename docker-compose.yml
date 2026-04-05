@@ -1,0 +1,23 @@
+services:
+  kokoclone:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+    container_name: kokoclone
+    ports:
+      - "7860:7860"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      GRADIO_SERVER_NAME: "0.0.0.0"
+      PORT: "7860"
+      HF_HOME: /data/huggingface
+    volumes:
+      - ./:/workspace
+      - huggingface-cache:/data/huggingface
+    restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+    name: kokoclone-huggingface-cache

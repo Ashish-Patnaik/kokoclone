@@ -176,4 +176,7 @@ with gr.Blocks() as demo:
 # 4. Launch the app
 if __name__ == "__main__":
     # Gradio 6.0 fix: Moved theme here and removed show_api
-    demo.launch(server_name="0.0.0.0")
+    demo.launch(
+        server_name=os.getenv("GRADIO_SERVER_NAME", "0.0.0.0"),
+        server_port=int(os.getenv("PORT", "7860"))
+    )

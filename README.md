@@ -17,11 +17,18 @@
   </a>
 </p>
 
-**KokoClone** is a fast, real-time compatible multilingual voice cloning system built on top of **Kokoro-ONNX**, one of the fastest open-source neural TTS engines available today.
+**KokoClone** is a fast, real-time compatible multilingual voice cloning system built on top of **Kokoro** and **Kanade** for speech synthesis and zero-shot voice conversion.
 
 It allows you to:
 * **Text → Clone:** Type text in multiple languages, provide a short reference audio clip, and instantly generate speech in that same voice.
 * **Audio → Clone:** Re-voice an existing audio recording to sound like any reference speaker — *no transcription needed*.
+
+## Fork Notes
+
+This fork keeps the upstream app and workflow intact while adding two practical quality-of-life improvements:
+
+- **Official Kokoro pipeline only:** text-to-speech now runs through `kokoro.KPipeline` across the supported languages, removing the older `kokoro_onnx` dependency.
+- **Self-contained Docker setup:** `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `docker-compose.gpu.yml`, and `DOCKER.md` now live in the repository root with a CPU-default workflow and an optional GPU override.
 
 
 ## Features
@@ -36,10 +43,10 @@ Upload a 3–10 second voice sample and KokoClone instantly transfers its vocal 
 Upload any existing speech recording and re-voice it to sound like a reference speaker. The pipeline skips TTS entirely and runs purely through the Kanade voice-conversion model. Works on recordings of any length thanks to automatic VRAM-aware chunking!
 
 ### Automatic Model Handling
-On the first run, the required model weights (`.onnx` and `.bin` files) are automatically downloaded from Hugging Face and placed in the correct directories.
+On the first run, the required Kokoro and Kanade model assets are automatically downloaded from Hugging Face and cached for reuse.
 
 ### Real-Time Friendly
-Built on Kokoro's efficient ONNX runtime pipeline, KokoClone detects your hardware and runs smoothly on both standard laptops (CPU) and workstations (GPU).
+Built on Kokoro's efficient inference stack, KokoClone detects your hardware and runs smoothly on both standard laptops (CPU) and workstations (GPU).
 
 
 ## Live Demo
@@ -49,13 +56,12 @@ Try it instantly without installing anything:
 
 ## Installation
 
-You can set up KokoClone using either **Conda** (Recommended) or **uv**.
+You can set up KokoClone using **Conda**, **uv**, or **Docker**.
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/Ashish-Patnaik/kokoclone.git
+git clone https://github.com/silasalves/kokoclone.git
 cd kokoclone
-
 ```
 
 ### 2. Set Up the Environment & Install Dependencies
@@ -65,23 +71,20 @@ cd kokoclone
 ```bash
 conda create -n kokoclone python=3.12.12 -y
 conda activate kokoclone
-
 ```
 
 **For CPU Users (Mac / Standard Laptops):**
 
 ```bash
-pip install torch torchaudio --index-url [https://download.pytorch.org/whl/cpu](https://download.pytorch.org/whl/cpu)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
-
 ```
 
 **For GPU Users (Nvidia GPUs):**
 
 ```bash
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
-pip install kokoro-onnx[gpu]
-
 ```
 
 #### Option B: Using `uv`
@@ -98,10 +101,23 @@ uv sync --extra gpu
 # Activate the environment
 source .venv/bin/activate  # Linux/macOS
 .venv\Scripts\activate     # Windows
-
 ```
 
+#### Option C: Using Docker
 
+From the repository root:
+
+```powershell
+# CPU / widest compatibility
+docker compose up --build -d
+
+# NVIDIA GPU
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build -d
+```
+
+`docker-compose.gpu.yml` is a small override file that adds GPU-specific settings on top of the default `docker-compose.yml`.
+
+Then open <http://localhost:7860>. See [`DOCKER.md`](./DOCKER.md) for the full Docker workflow.
 
 ##  Usage
 
@@ -209,12 +225,14 @@ The `chunked_voice_conversion` function in `core/chunked_convert.py` handles mem
 app.py                → Gradio Web Interface (two-tab UI)
 cli.py                → Command-line tool (tts and convert modes)
 inference.py          → Example API usage script
+Dockerfile            → Container image for local CPU/GPU deployment
+docker-compose.yml    → Repo-local Docker Compose workflow
+DOCKER.md             → Docker usage guide
 core/
  ├── cloner.py        → Core TTS + voice cloning engine
  └── chunked_convert.py → VRAM-aware chunked audio conversion
 model/                → Downloaded Kokoro model weights (Auto-populates)
 voice/                → Downloaded Kokoro voice bins (Auto-populates)
-
 ```
 
 
@@ -222,11 +240,9 @@ voice/                → Downloaded Kokoro voice bins (Auto-populates)
 
 This project builds upon the incredible open-source work of:
 
-* **[Kokoro-ONNX](https://github.com/thewh1teagle/kokoro-onnx)** — for fast and efficient neural speech synthesis.
+* **[Kokoro](https://github.com/hexgrad/kokoro)** — for fast and efficient multilingual neural speech synthesis.
 * **[Kanade Tokenizer](https://github.com/frothywater/kanade-tokenizer)** — for the brilliant zero-shot voice conversion architecture.
 
 ## License
 
 Licensed under the [Apache 2.0 License](https://www.google.com/search?q=LICENSE).
-
-```

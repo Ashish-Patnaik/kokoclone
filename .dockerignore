@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+.git/
+.gitignore
+.gradio/
+.cache/
+model/
+voice/
+*.wav
+*.mp3
