@@ -168,8 +168,7 @@ class patched_autocast(original_autocast):
 torch.autocast = patched_autocast
 # ---------------------------------------------
 
-from kokoro_onnx import Kokoro
-from kokoro_onnx.config import MAX_PHONEME_LENGTH, SAMPLE_RATE
+from kokoro import KPipeline
 from misaki import espeak
 from misaki.espeak import EspeakG2P
 from core.chunked_convert import chunked_voice_conversion
@@ -246,38 +245,7 @@ class KokoClone:
 
         return str(importlib.resources.files("kokoro_onnx").joinpath("config.json"))
 
-    def _patch_kokoro_compat(self, kokoro):
-        """Patch kokoro_onnx instances for model exports with mixed input conventions."""
-        input_types = {input_meta.name: input_meta.type for input_meta in kokoro.sess.get_inputs()}
-        if input_types.get("speed") != "tensor(float)" or "input_ids" not in input_types:
-            return kokoro
 
-        def _create_audio_compat(instance, phonemes, voice, speed):
-            if len(phonemes) > MAX_PHONEME_LENGTH:
-                phonemes = phonemes[:MAX_PHONEME_LENGTH]
-
-            start_t = time.time()
-            tokens = np.array(instance.tokenizer.tokenize(phonemes), dtype=np.int64)
-            assert len(tokens) <= MAX_PHONEME_LENGTH, (
-                f"Context length is {MAX_PHONEME_LENGTH}, but leave room for the pad token 0 at the start & end"
-            )
-
-            voice_style = voice[len(tokens)]
-            inputs = {
-                "input_ids": [[0, *tokens, 0]],
-                "style": np.array(voice_style, dtype=np.float32),
-                "speed": np.array([speed], dtype=np.float32),
-            }
-
-            audio = instance.sess.run(None, inputs)[0]
-            audio_duration = len(audio) / SAMPLE_RATE
-            create_duration = time.time() - start_t
-            if audio_duration > 0:
-                _ = create_duration / audio_duration
-            return audio, SAMPLE_RATE
-
-        kokoro._create_audio = types.MethodType(_create_audio_compat, kokoro)
-        return kokoro
 
     def _ensure_file(self, folder, filename):
         """Auto-downloads missing models from your Hugging Face repo."""
@@ -379,50 +347,50 @@ class KokoClone:
 
         return model_file, voices_file, vocab, g2p, voice, en_callable
 
-    def _create_kokoro(self, model_file, voices_file, vocab):
-        print(f"Loading Kokoro model from {model_file}...")
-        import onnxruntime as rt
-        import os
+    def _create_kokoro(self, lang="en"):
+        print(f"Loading Native PyTorch Kokoro pipeline for '{lang}'...")
+        lang_code_map = {
+            "en": "a", "hi": "h", "fr": "f", "it": "i", 
+            "es": "e", "pt": "p", "ja": "j", "zh": "z"
+        }
+        code = lang_code_map.get(lang, "a")
+        pipeline = KPipeline(lang_code=code)
         
-        original_init = rt.InferenceSession
+        # Removed bfloat16 cast to prevent oneDNN LSTM driver crashes on Intel CPUs.
+        # Kokoro (82M parameters) in float32 uses ~330MB RAM, which comfortably fits the 8GB budget.
         
-        def custom_init(*args, **kwargs):
-            os.environ["ONNX_PROVIDER"] = "CPUExecutionProvider"
-            kwargs['providers'] = ["CPUExecutionProvider"]
+        return pipeline
+
+    def _generate_kokoro_audio(self, text, lang, voice, g2p):
+        """Helper to generate Kokoro audio using PyTorch KPipeline."""
+        if lang not in self.kokoro_cache:
+            self.kokoro_cache[lang] = self._create_kokoro(lang)
             
-            # Prevent hybrid-core thrashing by strictly limiting ONNX threads
-            sess_options = rt.SessionOptions()
-            sess_options.intra_op_num_threads = 2
-            sess_options.inter_op_num_threads = 1
-            sess_options.execution_mode = rt.ExecutionMode.ORT_SEQUENTIAL
-            kwargs['sess_options'] = sess_options
+        pipeline = self.kokoro_cache[lang]
+        
+        if g2p:
+            phonemes, _ = g2p(text)
+            pack = pipeline.load_voice(voice).to(pipeline.model.device)
+            output = KPipeline.infer(pipeline.model, phonemes, pack, speed=1.0)
+            return output.audio.cpu().numpy() if hasattr(output.audio, "cpu") else output.audio, 24000
+        else:
+            generator = pipeline(text, voice=voice, speed=0.9)
+            all_audio = []
+            for gs, ps, audio in generator:
+                if audio is not None:
+                    if hasattr(audio, "cpu"): audio = audio.cpu().numpy()
+                    all_audio.append(audio)
             
-            return original_init(*args, **kwargs)
-            
-        rt.InferenceSession = custom_init
-        try:
-            from kokoro_onnx import Kokoro
-            return Kokoro(model_file, voices_file, vocab_config=vocab) if vocab else Kokoro(model_file, voices_file)
-        finally:
-            rt.InferenceSession = original_init
+            import numpy as np
+            samples = np.concatenate(all_audio) if all_audio else np.array([])
+            return samples, 24000
 
     def generate(self, text, lang, reference_audio, output_path="output.wav"):
         """Generates the speech and applies the target voice."""
         model_file, voices_file, vocab, g2p, voice, en_callable = self._get_config(lang)
         
-        # 1. Kokoro TTS Phase
-        if model_file not in self.kokoro_cache:
-            kokoro = self._create_kokoro(model_file, voices_file, vocab)
-            self.kokoro_cache[model_file] = self._patch_kokoro_compat(kokoro)
-        
-        kokoro = self.kokoro_cache[model_file]
-        
         print(f"Synthesizing text ({lang.upper()})...")
-        if g2p:
-            phonemes, _ = g2p(text)
-            samples, sr = kokoro.create(phonemes, voice=voice, speed=1.0, is_phonemes=True)
-        else:
-            samples, sr = kokoro.create(text, voice=voice, speed=0.9, lang="en-us")
+        samples, sr = self._generate_kokoro_audio(text, lang, voice, g2p)
 
         # Use a secure temporary file for the base audio
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
@@ -454,7 +422,7 @@ class KokoClone:
                     sample_rate=self.sample_rate
                 )
 
-            sf.write(output_path, converted_wav.numpy(), self.sample_rate)
+            sf.write(output_path, converted_wav.cpu().numpy() if hasattr(converted_wav, "cpu") else converted_wav.numpy(), self.sample_rate)
             print(f"Success! Saved: {output_path}")
 
         finally:
@@ -462,31 +430,15 @@ class KokoClone:
                 os.remove(temp_path) # Clean up temp file silently
 
     def generate_pcm(self, text, lang, ref_wav_tensor):
-        """Generates speech entirely in-memory. Returns numpy array at self.sample_rate.
-
-        Unlike generate(), this method:
-        - Accepts a pre-loaded reference waveform tensor (no disk read)
-        - Returns raw float32 numpy samples (no disk write)
-        - Converts Kokoro output directly to a tensor (no temp WAV)
-        """
+        """Generates speech entirely in-memory. Returns numpy array at self.sample_rate."""
         model_file, voices_file, vocab, g2p, voice, en_callable = self._get_config(lang)
-
-        # 1. Kokoro TTS Phase
-        if model_file not in self.kokoro_cache:
-            kokoro = self._create_kokoro(model_file, voices_file, vocab)
-            self.kokoro_cache[model_file] = self._patch_kokoro_compat(kokoro)
-
-        kokoro = self.kokoro_cache[model_file]
 
         import time
         _k_start = time.perf_counter()
-        if g2p:
-            phonemes, _ = g2p(text)
-            samples, sr = kokoro.create(phonemes, voice=voice, speed=1.0, is_phonemes=True)
-        else:
-            samples, sr = kokoro.create(text, voice=voice, speed=0.9, lang="en-us")
+        samples, sr = self._generate_kokoro_audio(text, lang, voice, g2p)
         _k_end = time.perf_counter()
         print(f"[Profiling] Kokoro TTS phase took {_k_end - _k_start:.2f}s")
+
 
         # 2. Direct tensor conversion (no disk I/O)
         source_wav = torch.from_numpy(samples).float()
