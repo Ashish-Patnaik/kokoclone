@@ -8,9 +8,166 @@ import types
 
 import numpy as np
 import torch
+
 import soundfile as sf
 from huggingface_hub import hf_hub_download
 from kanade_tokenizer import KanadeModel, load_audio, load_vocoder, vocode
+import kanade_tokenizer.module.fsq
+
+
+# --- MONKEY PATCH KANADE FSQ FOR INTEL XPU ---
+# The IPEX driver on Iris Xe lacks FP64 (float64) hardware support. The original kanade_tokenizer
+# uses Python float literals and explicitly casts to float64, which causes fatal level_zero crashes.
+# We patch these methods to strictly use float32 (or the input dtype) to bypass the driver crash!
+def patched_bound(self, z: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
+    levels_f = torch.tensor(self.levels, dtype=z.dtype, device=z.device)
+    # Ensure float operations don't implicitly promote to float64
+    one_minus_eps = torch.tensor(1.0 - eps, dtype=z.dtype, device=z.device)
+    half_l = (levels_f - 1.0) * one_minus_eps / 2.0
+    offsets_list = [0.5 if l % 2 == 0 else 0.0 for l in self.levels]
+    offset = torch.tensor(offsets_list, dtype=z.dtype, device=z.device)
+    shift = (offset / half_l).tan()
+    return (z + shift).tanh() * half_l - offset
+
+def patched_quantize(self, z: torch.Tensor) -> torch.Tensor:
+    from kanade_tokenizer.module.fsq import round_ste
+    quantized = round_ste(self.bound(z))
+    half_widths_list = [l // 2 for l in self.levels]
+    half_width = torch.tensor(half_widths_list, dtype=quantized.dtype, device=quantized.device)
+    return quantized / half_width
+
+def patched_scale_and_shift(self, zhat_normalized: torch.Tensor) -> torch.Tensor:
+    half_widths_list = [l // 2 for l in self.levels]
+    half_width = torch.tensor(half_widths_list, dtype=zhat_normalized.dtype, device=zhat_normalized.device)
+    return (zhat_normalized * half_width) + half_width
+
+def patched_scale_and_shift_inverse(self, zhat: torch.Tensor) -> torch.Tensor:
+    half_widths_list = [l // 2 for l in self.levels]
+    half_width = torch.tensor(half_widths_list, dtype=zhat.dtype, device=zhat.device)
+    return (zhat - half_width) / half_width
+
+def patched_codes_to_indices(self, zhat: torch.Tensor) -> torch.Tensor:
+    assert zhat.shape[-1] == len(self.levels)
+    zhat = self._scale_and_shift(zhat)
+    # Offload to CPU to bypass Intel Iris Xe level_zero driver casting crashes
+    zhat_cpu = zhat.cpu()
+    basis_list = [1]
+    for i in range(len(self.levels) - 1):
+        basis_list.append(basis_list[-1] * self.levels[i])
+    basis_cpu = torch.tensor(basis_list, dtype=torch.float32, device='cpu')
+    indices_cpu = (zhat_cpu.to(torch.float32) * basis_cpu).to(torch.long).sum(dim=-1)
+    return indices_cpu.to(zhat.device)
+
+def patched_indices_to_codes(self, indices: torch.Tensor) -> torch.Tensor:
+    indices_cpu = indices.cpu().unsqueeze(-1)
+    basis_list = [1]
+    for i in range(len(self.levels) - 1):
+        basis_list.append(basis_list[-1] * self.levels[i])
+    basis_cpu = torch.tensor(basis_list, dtype=torch.long, device='cpu')
+    levels_cpu = torch.tensor(self.levels, dtype=torch.long, device='cpu')
+    codes_non_centered = (indices_cpu // basis_cpu) % levels_cpu
+    return self._scale_and_shift_inverse(codes_non_centered.to(indices.device))
+
+def patched_fsq_forward(self, z: torch.Tensor) -> tuple[torch.Tensor, dict]:
+    latent = self.proj_in(z)
+    quantized_latent, indices = self.fsq(latent)
+    z_q = self.proj_out(quantized_latent)
+    # Skip perplexity calculation (which crashes on XPU with .float() on long tensors)
+    # since inference doesn't need it!
+    info_dict = {
+        "latent": latent,
+        "quantized_latent": quantized_latent,
+        "indices": indices,
+        "perplexity": torch.tensor(0.0, device=z.device),
+    }
+    return z_q, info_dict
+
+kanade_tokenizer.module.fsq.FSQ.bound = patched_bound
+kanade_tokenizer.module.fsq.FSQ.quantize = patched_quantize
+kanade_tokenizer.module.fsq.FSQ._scale_and_shift = patched_scale_and_shift
+kanade_tokenizer.module.fsq.FSQ._scale_and_shift_inverse = patched_scale_and_shift_inverse
+kanade_tokenizer.module.fsq.FSQ.codes_to_indices = patched_codes_to_indices
+kanade_tokenizer.module.fsq.FSQ.indices_to_codes = patched_indices_to_codes
+kanade_tokenizer.module.fsq.FiniteScalarQuantizer.forward = patched_fsq_forward
+
+import vocos.heads
+def patched_istft_forward(self, x: torch.Tensor) -> torch.Tensor:
+    x = self.out(x).transpose(1, 2)
+    mag, p = x.chunk(2, dim=1)
+    mag = torch.exp(mag)
+    mag = torch.clip(mag, max=1e2)
+    x_cos = torch.cos(p)
+    y_sin = torch.sin(p)
+    real = mag * x_cos
+    imag = mag * y_sin
+    
+    # Offload complex math (1j) and ISTFT to CPU because Intel XPU lacks ComplexFloat support!
+    real_cpu = real.cpu()
+    imag_cpu = imag.cpu()
+    S = real_cpu + 1j * imag_cpu
+    
+    # self.istft has window buffers, move it to CPU temporarily
+    audio = self.istft.cpu()(S)
+    return audio.to(x.device)
+
+vocos.heads.ISTFTHead.forward = patched_istft_forward
+
+import torchaudio.transforms
+original_resample_forward = torchaudio.transforms.Resample.forward
+
+def patched_resample_forward(self, waveform: torch.Tensor) -> torch.Tensor:
+    if waveform.device.type in ["xpu", "cuda"]:
+        device = waveform.device
+        waveform_cpu = waveform.cpu()
+        self_cpu = self.cpu()
+        resampled = original_resample_forward(self_cpu, waveform_cpu)
+        self.to(device) # put weights back
+        return resampled.to(device)
+    return original_resample_forward(self, waveform)
+
+torchaudio.transforms.Resample.forward = patched_resample_forward
+
+import kanade_tokenizer.module.ssl_extractor
+original_ssl_forward = kanade_tokenizer.module.ssl_extractor.SSLFeatureExtractor.forward
+
+def patched_ssl_forward(self, waveform: torch.Tensor, lengths: torch.Tensor | None = None, num_layers: int | None = None, return_lengths: bool = False):
+    if waveform.device.type in ["xpu", "cuda"]:
+        # wav2vec2 expects float32 on CPU
+        device = waveform.device
+        dtype = waveform.dtype
+        waveform_cpu = waveform.cpu().float()
+        lengths_cpu = lengths.cpu() if lengths is not None else None
+        self_cpu = self.cpu().float()
+        features = self_cpu(waveform_cpu, lengths_cpu)
+        if isinstance(features, tuple):
+            features = (features[0].to(dtype).to(device), features[1].to(dtype).to(device))
+        elif isinstance(features, list):
+            features = [f.to(dtype).to(device) for f in features]
+        else:
+            features = features.to(dtype).to(device)
+        # Restore module back to original device and dtype
+        self.to(dtype).to(device)
+        return features
+            
+    return original_ssl_forward(self, waveform, lengths, num_layers, return_lengths)
+
+kanade_tokenizer.module.ssl_extractor.SSLFeatureExtractor.forward = patched_ssl_forward
+
+import torch
+original_autocast = torch.autocast
+
+class patched_autocast(original_autocast):
+    def __init__(self, device_type, dtype=None, enabled=True, cache_enabled=None):
+        if device_type == "cuda" and not torch.cuda.is_available() and hasattr(torch, "xpu") and torch.xpu.is_available():
+            device_type = "xpu"
+        if cache_enabled is not None:
+            super().__init__(device_type, dtype=dtype, enabled=enabled, cache_enabled=cache_enabled)
+        else:
+            super().__init__(device_type, dtype=dtype, enabled=enabled)
+
+torch.autocast = patched_autocast
+# ---------------------------------------------
+
 from kokoro_onnx import Kokoro
 from kokoro_onnx.config import MAX_PHONEME_LENGTH, SAMPLE_RATE
 from misaki import espeak
@@ -18,21 +175,44 @@ from misaki.espeak import EspeakG2P
 from core.chunked_convert import chunked_voice_conversion
 
 class KokoClone:
-    def __init__(self, kanade_model="frothywater/kanade-12.5hz", hf_repo="PatnaikAshish/kokoclone"):
-        # Auto-detect GPU (CUDA) or fallback to CPU
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def __init__(self, kanade_model="frothywater/kanade-12.5hz", hf_repo="hexgrad/Kokoro-82M"):
+        # Force CPU on unsupported Intel Iris Xe devices because XPU driver hangs the whole system.
+        # Fallback to CUDA if available.
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            self.device = torch.device("xpu")
+        else:
+            self.device = torch.device("cpu")
+            
         print(f"Initializing KokoClone on: {self.device.type.upper()}")
         
         self.hf_repo = hf_repo
         
         # Load Kanade & Vocoder once, move to detected device
         print("Loading Kanade model...")
+        # Force CPU execution for Kanade and Vocoder because Intel Iris Xe XPU is extremely slow/broken
+        # for complex Transformer operations like SDPA.
+        self.device = torch.device("cpu")
+        print("Forcing KokoClone to CPU and applying PyTorch optimizations...")
+        
         self.kanade = KanadeModel.from_pretrained(kanade_model).to(self.device).eval()
-        self.vocoder = load_vocoder(self.kanade.config.vocoder_name).to(self.device)
+        self.vocoder = load_vocoder(self.kanade.config.vocoder_name).to(self.device).eval()
+
+        # Use torch.compile to optimize the Kanade inference graph
+        try:
+            self.kanade = torch.compile(self.kanade)
+            print("Successfully applied torch.compile to Kanade model.")
+        except Exception as e:
+            print(f"Warning: torch.compile failed or not supported: {e}")
+
         self.sample_rate = self.kanade.config.sample_rate
         
         # Cache for Kokoro
         self.kokoro_cache = {}
+        
+        # Cache for Kanade Reference Audio Embeddings
+        self.kanade_ref_cache = {}
 
     def _get_vocab_config(self, lang):
         """Return a vocab config path compatible with the selected language/model."""
@@ -199,13 +379,40 @@ class KokoClone:
 
         return model_file, voices_file, vocab, g2p, voice, en_callable
 
+    def _create_kokoro(self, model_file, voices_file, vocab):
+        print(f"Loading Kokoro model from {model_file}...")
+        import onnxruntime as rt
+        import os
+        
+        original_init = rt.InferenceSession
+        
+        def custom_init(*args, **kwargs):
+            os.environ["ONNX_PROVIDER"] = "CPUExecutionProvider"
+            kwargs['providers'] = ["CPUExecutionProvider"]
+            
+            # Prevent hybrid-core thrashing by strictly limiting ONNX threads
+            sess_options = rt.SessionOptions()
+            sess_options.intra_op_num_threads = 2
+            sess_options.inter_op_num_threads = 1
+            sess_options.execution_mode = rt.ExecutionMode.ORT_SEQUENTIAL
+            kwargs['sess_options'] = sess_options
+            
+            return original_init(*args, **kwargs)
+            
+        rt.InferenceSession = custom_init
+        try:
+            from kokoro_onnx import Kokoro
+            return Kokoro(model_file, voices_file, vocab_config=vocab) if vocab else Kokoro(model_file, voices_file)
+        finally:
+            rt.InferenceSession = original_init
+
     def generate(self, text, lang, reference_audio, output_path="output.wav"):
         """Generates the speech and applies the target voice."""
         model_file, voices_file, vocab, g2p, voice, en_callable = self._get_config(lang)
         
         # 1. Kokoro TTS Phase
         if model_file not in self.kokoro_cache:
-            kokoro = Kokoro(model_file, voices_file, vocab_config=vocab) if vocab else Kokoro(model_file, voices_file)
+            kokoro = self._create_kokoro(model_file, voices_file, vocab)
             self.kokoro_cache[model_file] = self._patch_kokoro_compat(kokoro)
         
         kokoro = self.kokoro_cache[model_file]
@@ -226,8 +433,17 @@ class KokoClone:
         try:
             print("Applying Voice Clone...")
             # Load and push to device
-            source_wav = load_audio(temp_path, sample_rate=self.sample_rate).to(self.device)
-            ref_wav = load_audio(reference_audio, sample_rate=self.sample_rate).to(self.device)
+            source_wav = load_audio(temp_path, sample_rate=self.sample_rate)
+            ref_wav = load_audio(reference_audio, sample_rate=self.sample_rate)
+
+            if self.device.type == "cpu":
+                pass
+            elif self.device.type == "xpu":
+                source_wav = source_wav.half()
+                ref_wav = ref_wav.half()
+
+            source_wav = source_wav.to(self.device)
+            ref_wav = ref_wav.to(self.device)
 
             with torch.inference_mode():
                 converted_wav = chunked_voice_conversion(
@@ -244,6 +460,74 @@ class KokoClone:
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path) # Clean up temp file silently
+
+    def generate_pcm(self, text, lang, ref_wav_tensor):
+        """Generates speech entirely in-memory. Returns numpy array at self.sample_rate.
+
+        Unlike generate(), this method:
+        - Accepts a pre-loaded reference waveform tensor (no disk read)
+        - Returns raw float32 numpy samples (no disk write)
+        - Converts Kokoro output directly to a tensor (no temp WAV)
+        """
+        model_file, voices_file, vocab, g2p, voice, en_callable = self._get_config(lang)
+
+        # 1. Kokoro TTS Phase
+        if model_file not in self.kokoro_cache:
+            kokoro = self._create_kokoro(model_file, voices_file, vocab)
+            self.kokoro_cache[model_file] = self._patch_kokoro_compat(kokoro)
+
+        kokoro = self.kokoro_cache[model_file]
+
+        import time
+        _k_start = time.perf_counter()
+        if g2p:
+            phonemes, _ = g2p(text)
+            samples, sr = kokoro.create(phonemes, voice=voice, speed=1.0, is_phonemes=True)
+        else:
+            samples, sr = kokoro.create(text, voice=voice, speed=0.9, lang="en-us")
+        _k_end = time.perf_counter()
+        print(f"[Profiling] Kokoro TTS phase took {_k_end - _k_start:.2f}s")
+
+        # 2. Direct tensor conversion (no disk I/O)
+        source_wav = torch.from_numpy(samples).float()
+        
+        if self.device.type == "cpu":
+            pass
+        elif self.device.type == "xpu":
+            if source_wav.device.type == "xpu":
+                source_wav = source_wav.cpu()
+            source_wav = source_wav.half()
+            
+            if ref_wav_tensor.device.type == "xpu":
+                ref_wav_tensor = ref_wav_tensor.cpu()
+            ref_wav_tensor = ref_wav_tensor.half()
+
+        source_wav = source_wav.to(self.device)
+        ref_wav_tensor = ref_wav_tensor.to(self.device)
+
+        # Precompute or retrieve the global embedding to avoid redundant 2.5s encoding
+        ref_key = id(ref_wav_tensor)
+        if ref_key not in self.kanade_ref_cache:
+            print("Caching Kanade reference embedding for the first time...")
+            with torch.inference_mode():
+                # Extract global embedding and cache it
+                ref_features = self.kanade.encode(ref_wav_tensor, return_content=False, return_global=True)
+                self.kanade_ref_cache[ref_key] = ref_features.global_embedding
+        
+        global_embedding = self.kanade_ref_cache[ref_key]
+
+        # 3. Kanade Voice Conversion Phase
+        with torch.inference_mode():
+            converted_wav = chunked_voice_conversion(
+                kanade=self.kanade,
+                vocoder_model=self.vocoder,
+                source_wav=source_wav,
+                ref_wav=ref_wav_tensor,
+                global_embedding=global_embedding,
+                sample_rate=self.sample_rate
+            )
+
+        return converted_wav.float().numpy()
 
     def convert(self, source_audio, reference_audio, output_path="output.wav"):
         """Re-voices source_audio to sound like reference_audio using chunking."""
