@@ -68,7 +68,8 @@ def chunked_voice_conversion(
     source_wav: torch.Tensor,
     ref_wav: torch.Tensor,
     sample_rate: int,
-    vram_fraction: float = 0.9,
+    vram_fraction: float = 0.5,
+    global_embedding: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Convert *source_wav* to the reference voice in VRAM-safe chunks.
 
@@ -107,8 +108,12 @@ def chunked_voice_conversion(
     rope_safe_chunk = int((rope_max_window - 2 * overlap_samples) * _ROPE_SAFETY_MARGIN)
     rope_safe_seconds = rope_safe_chunk / sample_rate
 
-    if device.type == "cuda":
-        total_vram_bytes = torch.cuda.get_device_properties(device).total_memory
+    if device.type in ["cuda", "xpu"]:
+        if device.type == "cuda":
+            total_vram_bytes = torch.cuda.get_device_properties(device).total_memory
+        else:
+            total_vram_bytes = torch.xpu.get_device_properties(device).total_memory
+            
         budget_bytes = total_vram_bytes * vram_fraction
         budget_gb = budget_bytes / (1024 ** 3)
 
@@ -131,9 +136,17 @@ def chunked_voice_conversion(
     # ── 2. Short-circuit when the whole file fits in one chunk ───────────────
     if n_samples <= chunk_samples:
         with torch.inference_mode():
-            mel = kanade.voice_conversion(
-                source_waveform=source_wav, reference_waveform=ref_wav
-            )
+            if global_embedding is not None:
+                source_features = kanade.encode(source_wav, return_content=True, return_global=False)
+                mel = kanade.decode(
+                    content_embedding=source_features.content_embedding,
+                    global_embedding=global_embedding,
+                    target_audio_length=source_wav.size(-1)
+                )
+            else:
+                mel = kanade.voice_conversion(
+                    source_waveform=source_wav, reference_waveform=ref_wav
+                )
             wav = vocode(vocoder_model, mel.unsqueeze(0))
         elapsed = time.perf_counter() - _start
         print(f"[chunked_convert] Completed in {elapsed:.1f}s")
@@ -156,9 +169,17 @@ def chunked_voice_conversion(
         chunk = source_wav[..., win_start:win_end]
 
         with torch.inference_mode():
-            mel_chunk: torch.Tensor = kanade.voice_conversion(
-                source_waveform=chunk, reference_waveform=ref_wav
-            )
+            if global_embedding is not None:
+                source_features = kanade.encode(chunk, return_content=True, return_global=False)
+                mel_chunk = kanade.decode(
+                    content_embedding=source_features.content_embedding,
+                    global_embedding=global_embedding,
+                    target_audio_length=chunk.size(-1)
+                )
+            else:
+                mel_chunk = kanade.voice_conversion(
+                    source_waveform=chunk, reference_waveform=ref_wav
+                )
 
         # Move to CPU immediately so the GPU buffer is freed before the next chunk.
         mel_chunk = mel_chunk.cpu()
@@ -173,6 +194,8 @@ def chunked_voice_conversion(
 
         if device.type == "cuda":
             torch.cuda.empty_cache()
+        elif device.type == "xpu":
+            torch.xpu.empty_cache()
 
     # ── 4. Assemble full mel and vocode in one pass ──────────────────────────
     full_mel = torch.cat(mel_parts, dim=-1).to(device)
