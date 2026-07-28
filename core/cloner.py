@@ -384,6 +384,21 @@ class KokoClone:
             import numpy as np
             samples = np.concatenate(all_audio) if all_audio else np.array([])
             return samples, 24000
+    def precache_embedding(self, ref_wav_tensor):
+        """Precomputes and caches the reference audio global embedding."""
+        ref_key = id(ref_wav_tensor)
+        if ref_key not in self.kanade_ref_cache:
+            print("Pre-caching Kanade reference embedding at startup...")
+            # Move tensor to the correct device
+            if self.device.type == "xpu":
+                if ref_wav_tensor.device.type == "xpu":
+                    ref_wav_tensor = ref_wav_tensor.cpu()
+                ref_wav_tensor = ref_wav_tensor.half()
+            ref_wav_tensor = ref_wav_tensor.to(self.device)
+            
+            with torch.inference_mode():
+                ref_features = self.kanade.encode(ref_wav_tensor, return_content=False, return_global=True)
+                self.kanade_ref_cache[ref_key] = ref_features.global_embedding
 
     def generate(self, text, lang, reference_audio, output_path="output.wav"):
         """Generates the speech and applies the target voice."""
